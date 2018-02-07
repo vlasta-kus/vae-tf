@@ -1,0 +1,7 @@
+*.pyc
+.*
+requirements.txt
+log/*
+out/*
+png/*
+mnist_data/*

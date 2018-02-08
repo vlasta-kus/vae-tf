@@ -108,6 +108,8 @@ class VAE():
         # reconstruction loss: mismatch b/w x & x_reconstructed
         # binary cross-entropy -- assumes x & p(x|z) are iid Bernoullis
         rec_loss = VAE.crossEntropy(x_reconstructed, x_in)
+        #rec_loss = VAE.l2_loss(x_reconstructed, x_in);
+        #rec_loss /= self.architecture[0];
 
         # Kullback-Leibler divergence: mismatch b/w approximate vs. imposed/true posterior
         kl_loss = VAE.kullbackLeibler(z_mean, z_log_sigma)
@@ -123,14 +125,24 @@ class VAE():
             cost += l2_reg
 
         # optimization
+        #global_step = tf.Variable(0, trainable=False)
+        #with tf.name_scope("Adam_optimizer"):
+        #    optimizer = tf.train.AdamOptimizer(self.learning_rate)
+        #    tvars = tf.trainable_variables()
+        #    grads_and_vars = optimizer.compute_gradients(cost, tvars)
+        #    clipped = [(tf.clip_by_value(grad, -5, 5), tvar) # gradient clipping
+        #            for grad, tvar in grads_and_vars]
+        #    train_op = optimizer.apply_gradients(clipped, global_step=global_step, name="minimize_cost")
+
+        # optimization
         global_step = tf.Variable(0, trainable=False)
-        with tf.name_scope("Adam_optimizer"):
-            optimizer = tf.train.AdamOptimizer(self.learning_rate)
+        with tf.name_scope("Adagrad_optimizer"):
+            optimizer = tf.train.AdagradOptimizer(self.learning_rate)
             tvars = tf.trainable_variables()
             grads_and_vars = optimizer.compute_gradients(cost, tvars)
             clipped = [(tf.clip_by_value(grad, -5, 5), tvar) # gradient clipping
                     for grad, tvar in grads_and_vars]
-            train_op = optimizer.apply_gradients(clipped, global_step=global_step,
+            train_op = optimizer.apply_gradients(grads_and_vars, global_step=global_step,
                                                  name="minimize_cost")
 
         # ops to directly explore latent space
@@ -226,7 +238,9 @@ class VAE():
                 INCREMENT = 0.5
                 pow_ = 0
 
+            nBatches = 0
             while True:
+                nBatches += 1
                 x, _ = X.train.next_batch(self.batch_size)
                 feed_dict = {self.x_in: x, self.dropout_: self.dropout}
                 fetches = [self.x_reconstructed, self.cost, self.global_step, self.train_op]
@@ -249,10 +263,13 @@ class VAE():
                         print("{}^{} = {}".format(BASE, pow_, i))
                         pow_ += INCREMENT
 
-                if i%1000 == 0 and verbose:
-                    print("round {} --> avg cost: ".format(i), err_train / i)
+                if i%50 == 0 and verbose:
+                    print("round {} --> current cost: {}".format(i, cost))
 
-                if i%2000 == 0 and verbose:# and i >= 10000:
+                if i%1000 == 0 and verbose:
+                    print("round {} --> \t total avg cost: {}".format(i, err_train / i))
+
+                if i%1000 == 0 and verbose:# and i >= 10000:
                     # visualize `n` examples of current minibatch inputs + reconstructions
                     plot.plotSubset(self, x, x_reconstructed, n=10, name="train",
                                     outdir=plots_outdir)
@@ -283,6 +300,7 @@ class VAE():
                     except(AttributeError): # not logging
                         continue
                     break
+            print(" >>> Processed %d batches, i.e. %d data samples." % (nBatches, nBatches * self.batch_size))
 
         except(KeyboardInterrupt):
             print("final avg cost (@ step {} = epoch {}): {}".format(

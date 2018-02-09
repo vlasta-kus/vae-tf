@@ -50,6 +50,7 @@ class VAE():
             handles = self._buildGraph()
             for handle in handles:
                 tf.add_to_collection(VAE.RESTORE_KEY, handle)
+            self.merged_summaries = tf.summary.merge_all() # merge all the summaries and write them out
             self.sesh.run(tf.global_variables_initializer())
 
         else: # restore saved model
@@ -88,14 +89,18 @@ class VAE():
                     # hidden layers reversed for function composition: outer -> inner
                     for hidden_size in reversed(self.architecture[1:-1])]
         h_encoded = composeAll(encoding)(x_in)
+        tf.summary.histogram('activations_encoded', h_encoded)
 
         # latent distribution parameterized by hidden encoding
         # z ~ N(z_mean, np.exp(z_log_sigma)**2)
         z_mean = Dense("z_mean", self.architecture[-1], dropout)(h_encoded)
         z_log_sigma = Dense("z_log_sigma", self.architecture[-1], dropout)(h_encoded)
+        tf.summary.histogram('activations_z_mean', z_mean)
+        tf.summary.histogram('activations_z_log_sigma', z_log_sigma)
 
         # kingma & welling: only 1 draw necessary as long as minibatch large enough (>100)
         z = self.sampleGaussian(z_mean, z_log_sigma)
+        tf.summary.histogram('z_sampled', z)
 
         # decoding / "generative": p(x|z)
         decoding = [Dense("decoding", hidden_size, dropout, self.nonlinearity)
@@ -109,10 +114,11 @@ class VAE():
         # binary cross-entropy -- assumes x & p(x|z) are iid Bernoullis
         rec_loss = VAE.crossEntropy(x_reconstructed, x_in)
         #rec_loss = VAE.l2_loss(x_reconstructed, x_in);
-        #rec_loss /= self.architecture[0];
+        tf.summary.scalar('cross_entropy', tf.reduce_mean(rec_loss))
 
         # Kullback-Leibler divergence: mismatch b/w approximate vs. imposed/true posterior
         kl_loss = VAE.kullbackLeibler(z_mean, z_log_sigma)
+        tf.summary.scalar('KL_divergence', tf.reduce_mean(kl_loss))
 
         with tf.name_scope("l2_regularization"):
             regularizers = [tf.nn.l2_loss(var) for var in self.sesh.graph.get_collection(
@@ -170,8 +176,7 @@ class VAE():
         with tf.name_scope("cross_entropy"):
             # bound by clipping to avoid nan
             obs_ = tf.clip_by_value(obs, offset, 1 - offset)
-            return -tf.reduce_sum(actual * tf.log(obs_) +
-                                  (1 - actual) * tf.log(1 - obs_), 1)
+            return -tf.reduce_sum(actual * tf.log(obs_) + (1 - actual) * tf.log(1 - obs_), 1)
 
     @staticmethod
     def l1_loss(obs, actual):
@@ -193,8 +198,8 @@ class VAE():
         # (tf.Tensor, tf.Tensor) -> tf.Tensor
         with tf.name_scope("KL_divergence"):
             # = -0.5 * (1 + log(sigma**2) - mu**2 - sigma**2)
-            return -0.5 * tf.reduce_sum(1 + 2 * log_sigma - mu**2 -
-                                        tf.exp(2 * log_sigma), 1)
+            #return -0.5 * tf.reduce_sum(1 + 2 * log_sigma - mu**2 - tf.exp(2 * log_sigma), 1)
+            return -0.5 * tf.reduce_sum(1 + 2 * log_sigma - tf.square(mu) - tf.exp(2 * log_sigma), 1)
 
     def encode(self, x):
         """Probabilistic encoder from inputs to latent distribution parameters;
@@ -243,8 +248,8 @@ class VAE():
                 nBatches += 1
                 x, _ = X.train.next_batch(self.batch_size)
                 feed_dict = {self.x_in: x, self.dropout_: self.dropout}
-                fetches = [self.x_reconstructed, self.cost, self.global_step, self.train_op]
-                x_reconstructed, cost, i, _ = self.sesh.run(fetches, feed_dict)
+                fetches = [self.x_reconstructed, self.cost, self.global_step, self.train_op, self.merged_summaries]
+                x_reconstructed, cost, i, _, summary = self.sesh.run(fetches, feed_dict)
 
                 err_train += cost
 
@@ -262,6 +267,11 @@ class VAE():
 
                         print("{}^{} = {}".format(BASE, pow_, i))
                         pow_ += INCREMENT
+
+                if i%10 == 0:
+                    #run_metadata = tf.RunMetadata()
+                    #self.logger.add_run_metadata(run_metadata, 'step%03d' % i)
+                    self.logger.add_summary(summary, i)
 
                 if i%50 == 0 and verbose:
                     print("round {} --> current cost: {}".format(i, cost))

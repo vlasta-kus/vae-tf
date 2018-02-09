@@ -15,7 +15,7 @@ ARCHITECTURE = [IMG_DIM**2, # 784 pixels
                 #500, 500, # intermediate encoding
                 #2] # latent space dims
                 400, 200,
-                100]
+                50]
 # (and symmetrically back out again)
 
 HYPERPARAMS = {

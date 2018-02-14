@@ -23,7 +23,7 @@ class VAE():
         "dropout": 1.,
         "lambda_l2_reg": 0.,
         "nonlinearity": tf.nn.elu,
-        "squashing": tf.nn.sigmoid
+        "output_activation": tf.nn.sigmoid
     }
     RESTORE_KEY = "to_restore"
 
@@ -67,9 +67,9 @@ class VAE():
             #handles = self.sesh.graph.get_collection(VAE.RESTORE_KEY)
 
         # unpack handles for tensor ops to feed or fetch
-        (self.x_in, self.dropout_, self.z_mean, self.z_log_sigma,
+        (self.x_in, self.dropout_prob, self.z_mean, self.z_sigma,
          self.x_reconstructed, self.z_, self.x_reconstructed_,
-         self.cost, self.global_step, self.train_op) = handles
+         self.cost, self.total_updates, self.train_op) = handles
 
         if save_graph_def: # tensorboard
             self.logger = tf.summary.FileWriter(log_dir, self.sesh.graph)
@@ -77,38 +77,39 @@ class VAE():
     @property
     def step(self):
         """Train step"""
-        return self.global_step.eval(session=self.sesh)
+        return self.total_updates.eval(session=self.sesh)
 
     def _buildGraph(self):
         x_in = tf.placeholder(tf.float32, shape=[None, # enables variable batch size
                                                  self.architecture[0]], name="x")
-        dropout = tf.placeholder_with_default(1., shape=[], name="dropout")
+        dropout_prob = tf.placeholder_with_default(1., shape=[], name="dropout_prob")
 
         # encoding / "recognition": q(z|x)
-        encoding = [Dense("encoding", hidden_size, dropout, self.nonlinearity)
-                    # hidden layers reversed for function composition: outer -> inner
-                    for hidden_size in reversed(self.architecture[1:-1])]
-        h_encoded = composeAll(encoding)(x_in)
-        tf.summary.histogram('activations_encoded', h_encoded)
+        encoding = [Dense("encoding", idx, hidden_size, dropout_prob, self.nonlinearity) for hidden_size, idx in zip(self.architecture[1:-1], range(len(self.architecture) - 2))]
+        # hidden layers reversed for function composition: outer -> inner
+        h_encoded = composeAll(reversed(encoding))(x_in)
+        self.layerSummaries(encoding, x_in)
 
         # latent distribution parameterized by hidden encoding
-        # z ~ N(z_mean, np.exp(z_log_sigma)**2)
-        z_mean = Dense("z_mean", self.architecture[-1], dropout)(h_encoded)
-        z_log_sigma = Dense("z_log_sigma", self.architecture[-1], dropout)(h_encoded)
+        # z ~ N(z_mean, z_sigma**2)
+        z_mean = Dense("z_mean", len(self.architecture) - 2, self.architecture[-1], 1.)(h_encoded)
+        z_sigma = Dense("z_sigma", len(self.architecture) - 2, self.architecture[-1], 1.)(h_encoded)
         tf.summary.histogram('activations_z_mean', z_mean)
-        tf.summary.histogram('activations_z_log_sigma', z_log_sigma)
+        tf.summary.histogram('activations_z_sigma', z_sigma)
+        tf.summary.scalar('z_mean_mean-activations', tf.reduce_mean(z_mean))
+        tf.summary.scalar('z_sigma_mean-activations', tf.reduce_mean(z_sigma))
 
         # kingma & welling: only 1 draw necessary as long as minibatch large enough (>100)
-        z = self.sampleGaussian(z_mean, z_log_sigma)
+        z = self.sampleGaussian(z_mean, z_sigma)
         tf.summary.histogram('z_sampled', z)
 
-        # decoding / "generative": p(x|z)
-        decoding = [Dense("decoding", hidden_size, dropout, self.nonlinearity)
-                    for hidden_size in self.architecture[1:-1]] # assumes symmetry
-        # final reconstruction: restore original dims, squash outputs [0, 1]
-        decoding.insert(0, Dense( # prepend as outermost function
-            "x_decoding", self.architecture[0], dropout, self.squashing))
+        # decoding (p(x|z)): assuming architecture symmetry
+        decoding = [Dense("decoding", idx, hidden_size, dropout_prob, self.nonlinearity)
+                        for hidden_size, idx in zip(self.architecture[1:-1], reversed(range(len(self.architecture)-1, 2*len(self.architecture) - 3, 1)))]
+        # final reconstruction: prepend as outermost function
+        decoding.insert(0, Dense("x_decoding", 2*len(self.architecture) - 3, self.architecture[0], 1.0, self.output_activation))
         x_reconstructed = tf.identity(composeAll(decoding)(z), name="x_reconstructed")
+        self.layerSummaries(reversed(decoding), z)
 
         # reconstruction loss: mismatch b/w x & x_reconstructed
         # binary cross-entropy -- assumes x & p(x|z) are iid Bernoullis
@@ -117,39 +118,32 @@ class VAE():
         tf.summary.scalar('cross_entropy', tf.reduce_mean(rec_loss))
 
         # Kullback-Leibler divergence: mismatch b/w approximate vs. imposed/true posterior
-        kl_loss = VAE.kullbackLeibler(z_mean, z_log_sigma)
+        kl_loss = VAE.kullbackLeibler(z_mean, z_sigma)
         tf.summary.scalar('KL_divergence', tf.reduce_mean(kl_loss))
 
         with tf.name_scope("l2_regularization"):
-            regularizers = [tf.nn.l2_loss(var) for var in self.sesh.graph.get_collection(
-                "trainable_variables") if "weights" in var.name]
+            regularizers = [tf.nn.l2_loss(var) for var in self.sesh.graph.get_collection("trainable_variables") if "weights" in var.name]
             l2_reg = self.lambda_l2_reg * tf.add_n(regularizers)
+        tf.summary.scalar('l2_reg', l2_reg)
 
         with tf.name_scope("cost"):
             # average over minibatch
             cost = tf.reduce_mean(rec_loss + kl_loss, name="vae_cost")
+            tf.summary.scalar('cost_without_regularization', cost)
             cost += l2_reg
+        tf.summary.scalar('cost', cost)
 
         # optimization
-        #global_step = tf.Variable(0, trainable=False)
+        total_updates = tf.Variable(0, trainable=False)
         #with tf.name_scope("Adam_optimizer"):
-        #    optimizer = tf.train.AdamOptimizer(self.learning_rate)
-        #    tvars = tf.trainable_variables()
-        #    grads_and_vars = optimizer.compute_gradients(cost, tvars)
-        #    clipped = [(tf.clip_by_value(grad, -5, 5), tvar) # gradient clipping
-        #            for grad, tvar in grads_and_vars]
-        #    train_op = optimizer.apply_gradients(clipped, global_step=global_step, name="minimize_cost")
-
-        # optimization
-        global_step = tf.Variable(0, trainable=False)
         with tf.name_scope("Adagrad_optimizer"):
+            #optimizer = tf.train.AdamOptimizer(self.learning_rate)
             optimizer = tf.train.AdagradOptimizer(self.learning_rate)
             tvars = tf.trainable_variables()
             grads_and_vars = optimizer.compute_gradients(cost, tvars)
             clipped = [(tf.clip_by_value(grad, -5, 5), tvar) # gradient clipping
                     for grad, tvar in grads_and_vars]
-            train_op = optimizer.apply_gradients(grads_and_vars, global_step=global_step,
-                                                 name="minimize_cost")
+            train_op = optimizer.apply_gradients(grads_and_vars, global_step=total_updates, name="minimize_cost")
 
         # ops to directly explore latent space
         # defaults to prior z ~ N(0, I)
@@ -159,15 +153,14 @@ class VAE():
                                             name="latent_in")
         x_reconstructed_ = composeAll(decoding)(z_)
 
-        return (x_in, dropout, z_mean, z_log_sigma, x_reconstructed,
-                z_, x_reconstructed_, cost, global_step, train_op)
+        return (x_in, dropout_prob, z_mean, z_sigma, x_reconstructed, z_, x_reconstructed_, cost, total_updates, train_op)
 
-    def sampleGaussian(self, mu, log_sigma):
+    def sampleGaussian(self, mu, sigma):
         """(Differentiably!) draw sample from Gaussian with given shape, subject to random noise epsilon"""
         with tf.name_scope("sample_gaussian"):
             # reparameterization trick
-            epsilon = tf.random_normal(tf.shape(log_sigma), name="epsilon")
-            return mu + epsilon * tf.exp(log_sigma) # N(mu, I * sigma**2)
+            epsilon = tf.random_normal(tf.shape(sigma), name="epsilon")
+            return mu + epsilon * sigma # N(mu, I * sigma**2)
 
     @staticmethod
     def crossEntropy(obs, actual, offset=1e-7):
@@ -193,13 +186,10 @@ class VAE():
             return tf.reduce_sum(tf.square(obs - actual), 1)
 
     @staticmethod
-    def kullbackLeibler(mu, log_sigma):
+    def kullbackLeibler(mu, sigma):
         """(Gaussian) Kullback-Leibler divergence KL(q||p), per training example"""
-        # (tf.Tensor, tf.Tensor) -> tf.Tensor
         with tf.name_scope("KL_divergence"):
-            # = -0.5 * (1 + log(sigma**2) - mu**2 - sigma**2)
-            #return -0.5 * tf.reduce_sum(1 + 2 * log_sigma - mu**2 - tf.exp(2 * log_sigma), 1)
-            return -0.5 * tf.reduce_sum(1 + 2 * log_sigma - tf.square(mu) - tf.exp(2 * log_sigma), 1)
+            return 0.5 * tf.reduce_sum(tf.square(mu) + tf.square(sigma) - tf.log(tf.square(sigma)) - 1, 1)
 
     def encode(self, x):
         """Probabilistic encoder from inputs to latent distribution parameters;
@@ -207,7 +197,7 @@ class VAE():
         """
         # np.array -> [float, float]
         feed_dict = {self.x_in: x}
-        return self.sesh.run([self.z_mean, self.z_log_sigma], feed_dict=feed_dict)
+        return self.sesh.run([self.z_mean, self.z_sigma], feed_dict=feed_dict)
 
     def decode(self, zs=None):
         """Generative decoder from latent space to reconstructions of input space;
@@ -227,9 +217,18 @@ class VAE():
         # np.array -> np.array
         return self.decode(self.sampleGaussian(*self.encode(x)))
 
-    def train(self, X, max_iter=np.inf, max_epochs=np.inf, cross_validate=True,
-              verbose=True, save=True, outdir="./out", plots_outdir="./png",
-              plot_latent_over_time=False):
+    def layerSummaries(self, layers, input):
+        previous_out = input
+        for layer in layers:
+            curr_out = layer(previous_out)
+            mean = tf.reduce_mean(curr_out)
+            stddev = tf.sqrt(tf.reduce_mean( tf.square(curr_out - mean) ))
+            tf.summary.histogram(layer.name + '_activations', curr_out)
+            tf.summary.scalar(layer.name + '_mean-activations', mean)
+            tf.summary.scalar(layer.name + '_stddev-activations', stddev)
+            previous_out = curr_out
+
+    def train(self, X, max_iter=np.inf, max_epochs=np.inf, cross_validate=True, verbose=True, save=True, outdir="./out", plots_outdir="./png", plot_latent_over_time=False):
         if save:
             saver = tf.train.Saver(tf.global_variables())
 
@@ -247,8 +246,8 @@ class VAE():
             while True:
                 nBatches += 1
                 x, _ = X.train.next_batch(self.batch_size)
-                feed_dict = {self.x_in: x, self.dropout_: self.dropout}
-                fetches = [self.x_reconstructed, self.cost, self.global_step, self.train_op, self.merged_summaries]
+                feed_dict = {self.x_in: x, self.dropout_prob: self.dropout}
+                fetches = [self.x_reconstructed, self.cost, self.total_updates, self.train_op, self.merged_summaries]
                 x_reconstructed, cost, i, _, summary = self.sesh.run(fetches, feed_dict)
 
                 err_train += cost
@@ -274,12 +273,12 @@ class VAE():
                     self.logger.add_summary(summary, i)
 
                 if i%50 == 0 and verbose:
-                    print("round {} --> current cost: {}".format(i, cost))
+                    print("  iteration {} --> current cost: {}".format(i, cost))
 
                 if i%1000 == 0 and verbose:
-                    print("round {} --> \t total avg cost: {}".format(i, err_train / i))
+                    print("  \titeration {} --> total avg cost: {}".format(i, err_train / i))
 
-                if i%1000 == 0 and verbose:# and i >= 10000:
+                if i%1000 == 0 and verbose: # and i >= 10000:
                     # visualize `n` examples of current minibatch inputs + reconstructions
                     plot.plotSubset(self, x, x_reconstructed, n=10, name="train",
                                     outdir=plots_outdir)
@@ -290,7 +289,7 @@ class VAE():
                         fetches = [self.x_reconstructed, self.cost]
                         x_reconstructed, cost = self.sesh.run(fetches, feed_dict)
 
-                        print("round {} --> CV cost: ".format(i), cost)
+                        print("  iteration {} --> CV cost: ".format(i), cost)
                         plot.plotSubset(self, x, x_reconstructed, n=10, name="cv",
                                         outdir=plots_outdir)
 
@@ -310,7 +309,7 @@ class VAE():
                     except(AttributeError): # not logging
                         continue
                     break
-            print(" >>> Processed %d batches, i.e. %d data samples." % (nBatches, nBatches * self.batch_size))
+            print(" >>> Processed %d batches of size %d, i.e. %d data samples." % (nBatches, self.batch_size, nBatches * self.batch_size))
 
         except(KeyboardInterrupt):
             print("final avg cost (@ step {} = epoch {}): {}".format(

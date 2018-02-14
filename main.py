@@ -15,17 +15,18 @@ ARCHITECTURE = [IMG_DIM**2, # 784 pixels
                 #500, 500, # intermediate encoding
                 #2] # latent space dims
                 400, 200,
-                50]
+                20]
 # (and symmetrically back out again)
 
 HYPERPARAMS = {
     "batch_size": 128,
-    "learning_rate": 0.05, #5E-4,
+    "learning_rate": 0.01,
     "dropout": 0.9,
     "lambda_l2_reg": 1E-5,
     #"nonlinearity": tf.nn.elu,
     "nonlinearity": tf.nn.relu,
-    "squashing": tf.nn.sigmoid
+    "output_activation": tf.nn.sigmoid
+    #"output_activation": tf.identity
 }
 
 MAX_ITER = 3000 #2**16
@@ -47,22 +48,22 @@ def all_plots(model, mnist):
 
         print("Exploring latent...")
         plot.exploreLatent(model, nx=20, ny=20, range_=(-4, 4), outdir=PLOTS_DIR)
-        for n in (24, 30, 60, 100):
+        for n in (24, 30): #, 60, 100):
             plot.exploreLatent(model, nx=n, ny=n, ppf=True, outdir=PLOTS_DIR,
                                name="explore_ppf{}".format(n))
 
-    print("Interpolating...")
-    interpolate_digits(model, mnist)
+    #print("Interpolating...")
+    #interpolate_digits(model, mnist)
 
     print("Plotting end-to-end reconstructions...")
     plot_all_end_to_end(model, mnist)
 
     print("Morphing...")
-    morph_numbers(model, mnist, ns=[9,8,7,6,5,4,3,2,1,0])
+    morph_numbers(model, mnist, ns=[9,8,7,6,5,4,3,2,1,0], n_per_morph=5)
 
-    print("Plotting 10 MNIST digits...")
-    for i in range(10):
-        plot.justMNIST(get_mnist(i, mnist), name=str(i), outdir=PLOTS_DIR)
+    #print("Plotting 10 MNIST digits...")
+    #for i in range(10):
+    #    plot.justMNIST(get_mnist(i, mnist), name=str(i), outdir=PLOTS_DIR)
 
 def plot_all_in_latent(model, mnist):
     names = ("train", "validation", "test")

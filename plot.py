@@ -37,8 +37,8 @@ def plotSubset(model, x_in, x_reconstructed, n=10, cols=None, outlines=True,
 
     # plt.show()
     if save:
-        title = "{}_batch_{}_round_{}_{}.png".format(
-            model.datetime, "_".join(map(str, model.architecture)), model.step, name)
+        title = "{}_batch_{}_iteration_{}_{}.png".format(
+            model.datetime, "-".join(map(str, model.architecture)), model.step, name)
         plt.savefig(os.path.join(outdir, title), bbox_inches="tight")
 
 
@@ -51,7 +51,7 @@ def plotInLatent(model, x_in, labels=[], range_=None, title=None,
     ys, xs = mus.T
 
     plt.figure()
-    plt.title("round {}: {} in latent space".format(model.step, title))
+    plt.title("iteration {}: {} in latent space".format(model.step, title))
     kwargs = {'alpha': 0.8}
 
     classes = set(labels)
@@ -76,8 +76,8 @@ def plotInLatent(model, x_in, labels=[], range_=None, title=None,
 
     # plt.show()
     if save:
-        title = "{}_latent_{}_round_{}_{}.png".format(
-            model.datetime, "_".join(map(str, model.architecture)),
+        title = "{}_latent_{}_iteration_{}_{}.png".format(
+            model.datetime, "-".join(map(str, model.architecture)),
             model.step, name)
         plt.savefig(os.path.join(outdir, title), bbox_inches="tight")
 
@@ -118,8 +118,8 @@ def exploreLatent(model, nx=20, ny=20, range_=(-4, 4), ppf=False,
 
     # plt.show()
     if save:
-        title = "{}_latent_{}_round_{}_{}.png".format(
-            model.datetime, "_".join(map(str, model.architecture)), model.step, name)
+        title = "{}_latent_{}_iteration_{}_{}.png".format(
+            model.datetime, "-".join(map(str, model.architecture)), model.step, name)
         plt.savefig(os.path.join(outdir, title), bbox_inches="tight")
 
 
@@ -139,8 +139,8 @@ def interpolate(model, latent_1, latent_2, n=20, save=True, name="interpolate", 
 
     # plt.show()
     if save:
-        title = "{}_latent_{}_round_{}_{}".format(
-            model.datetime, "_".join(map(str, model.architecture)), model.step, name)
+        title = "{}_latent_{}_iteration_{}_{}".format(
+            model.datetime, "-".join(map(str, model.architecture)), model.step, name)
         plt.savefig(os.path.join(outdir, title), bbox_inches="tight")
 
 
@@ -197,7 +197,7 @@ def morph(model, zs, n_per_morph=10, loop=True, save=True, name="morph", outdir=
 
         # plt.show()
         if save:
-            title = "{}_latent_{}_round_{}_{}.{}.png".format(
-                model.datetime, "_".join(map(str, model.architecture)),
+            title = "{}_latent_{}_iteration_{}_{}.{}.png".format(
+                model.datetime, "-".join(map(str, model.architecture)),
                 model.step, name, i)
             plt.savefig(os.path.join(outdir, title), bbox_inches="tight")

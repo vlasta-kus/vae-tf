@@ -111,10 +111,14 @@ class VAE():
         x_reconstructed = tf.identity(composeAll(decoding)(z), name="x_reconstructed")
         self.layerSummaries(reversed(decoding), z)
 
+        tf.summary.scalar('autoencoderTest_MSE', tf.losses.mean_squared_error(x_reconstructed, x_in))
+        tf.summary.scalar('autoencoderTest_sqrtMSE', tf.sqrt(tf.losses.mean_squared_error(x_reconstructed, x_in)))
+        tf.summary.scalar('autoencoderTest_cosSim', self.cosSim(x_reconstructed, x_in))
+
         # reconstruction loss: mismatch b/w x & x_reconstructed
         # binary cross-entropy -- assumes x & p(x|z) are iid Bernoullis
         rec_loss = VAE.crossEntropy(x_reconstructed, x_in)
-        #rec_loss = VAE.l2_loss(x_reconstructed, x_in);
+        #rec_loss = VAE.l2_loss(x_reconstructed, x_in)
         tf.summary.scalar('cross_entropy', tf.reduce_mean(rec_loss))
 
         # Kullback-Leibler divergence: mismatch b/w approximate vs. imposed/true posterior
@@ -191,6 +195,9 @@ class VAE():
         with tf.name_scope("KL_divergence"):
             return 0.5 * tf.reduce_sum(tf.square(mu) + tf.square(sigma) - tf.log(tf.square(sigma)) - 1, 1)
 
+    def cosSim(self, x1, x2):
+        return 1 - tf.losses.cosine_distance(tf.nn.l2_normalize(x1, 0), tf.nn.l2_normalize(x2, 0), axis=0)
+
     def encode(self, x):
         """Probabilistic encoder from inputs to latent distribution parameters;
         a.k.a. inference network q(z|x)
@@ -228,60 +235,61 @@ class VAE():
             tf.summary.scalar(layer.name + '_stddev-activations', stddev)
             previous_out = curr_out
 
-    def train(self, X, max_iter=np.inf, max_epochs=np.inf, cross_validate=True, verbose=True, save=True, outdir="./out", plots_outdir="./png", plot_latent_over_time=False):
+    def train(self, X, max_iter=np.inf, max_epochs=np.inf, cross_validate=True, verbose=True, save=True, outdir="./out", plots_outdir="./png", plot_latent_over_time=False, control_plots=False):
         if save:
             saver = tf.train.Saver(tf.global_variables())
 
         try:
             err_train = 0
+            cost_finalBatch = 0
             now = datetime.now().isoformat()[11:]
             print("------- Training begin: {} -------\n".format(now))
 
-            if plot_latent_over_time: # plot latent space over log_BASE time
+            if control_plots and plot_latent_over_time: # plot latent space over log_BASE time
                 BASE = 2
                 INCREMENT = 0.5
                 pow_ = 0
 
             nBatches = 0
-            while True:
+            total_updates = 0
+            while total_updates < max_iter and X.train.epochs_completed < max_epochs:
                 nBatches += 1
                 x, _ = X.train.next_batch(self.batch_size)
                 feed_dict = {self.x_in: x, self.dropout_prob: self.dropout}
                 fetches = [self.x_reconstructed, self.cost, self.total_updates, self.train_op, self.merged_summaries]
-                x_reconstructed, cost, i, _, summary = self.sesh.run(fetches, feed_dict)
+                x_reconstructed, cost, total_updates, _, summary = self.sesh.run(fetches, feed_dict)
 
                 err_train += cost
+                cost_finalBatch = cost
 
-                if plot_latent_over_time:
-                    while int(round(BASE**pow_)) == i:
-                        plot.exploreLatent(self, nx=30, ny=30, ppf=True, outdir=plots_outdir,
-                                           name="explore_ppf30_{}".format(pow_))
+                if control_plots and plot_latent_over_time:
+                    while int(round(BASE**pow_)) == total_updates:
+                        plot.exploreLatent(self, nx=30, ny=30, ppf=True, outdir=plots_outdir, name="explore_ppf30_{}".format(pow_))
 
                         names = ("train", "validation", "test")
                         datasets = (X.train, X.validation, X.test)
                         for name, dataset in zip(names, datasets):
-                            plot.plotInLatent(self, dataset.images, dataset.labels, range_=
-                                              (-6, 6), title=name, outdir=plots_outdir,
-                                              name="{}_{}".format(name, pow_))
+                            plot.plotInLatent(self, dataset.images, dataset.labels, range_=(-6, 6), title=name, outdir=plots_outdir, name="{}_{}".format(name, pow_))
 
-                        print("{}^{} = {}".format(BASE, pow_, i))
+                        print("{}^{} = {}".format(BASE, pow_, total_updates))
                         pow_ += INCREMENT
 
-                if i%10 == 0:
+                if total_updates%10 == 0:
                     #run_metadata = tf.RunMetadata()
-                    #self.logger.add_run_metadata(run_metadata, 'step%03d' % i)
-                    self.logger.add_summary(summary, i)
+                    #self.logger.add_run_metadata(run_metadata, 'step%03d' % total_updates)
+                    self.logger.add_summary(summary, total_updates)
 
-                if i%50 == 0 and verbose:
-                    print("  iteration {} --> current cost: {}".format(i, cost))
+                if total_updates%50 == 0 and verbose:
+                    print("  iteration {} --> current cost: {}".format(total_updates, cost))
+                    # TO DO: np.dot(a, b), np.linalg.norm(a, axis=1)
 
-                if i%1000 == 0 and verbose:
-                    print("  \titeration {} --> total avg cost: {}".format(i, err_train / i))
+                if total_updates%1000 == 0 and verbose:
+                    print("  \titeration {} --> total avg cost: {}".format(total_updates, err_train / total_updates))
 
-                if i%1000 == 0 and verbose: # and i >= 10000:
+                if total_updates%1000 == 0 and verbose: # and total_updates >= 10000:
                     # visualize `n` examples of current minibatch inputs + reconstructions
-                    plot.plotSubset(self, x, x_reconstructed, n=10, name="train",
-                                    outdir=plots_outdir)
+                    if control_plots:
+                        plot.plotSubset(self, x, x_reconstructed, n=10, name="train", outdir=plots_outdir)
 
                     if cross_validate:
                         x, _ = X.validation.next_batch(self.batch_size)
@@ -290,30 +298,26 @@ class VAE():
                         x_reconstructed, cost = self.sesh.run(fetches, feed_dict)
 
                         print("  iteration {} --> CV cost: ".format(i), cost)
-                        plot.plotSubset(self, x, x_reconstructed, n=10, name="cv",
-                                        outdir=plots_outdir)
+                        if control_plots:
+                            plot.plotSubset(self, x, x_reconstructed, n=10, name="cv", outdir=plots_outdir)
 
-                if i >= max_iter or X.train.epochs_completed >= max_epochs:
-                    print("final avg cost (@ step {} = epoch {}): {}".format(
-                        i, X.train.epochs_completed, err_train / i))
-                    now = datetime.now().isoformat()[11:]
-                    print("------- Training end: {} -------\n".format(now))
 
-                    if save:
-                        outfile = os.path.join(os.path.abspath(outdir), "{}_vae_{}".format(
-                            self.datetime, "_".join(map(str, self.architecture))))
-                        saver.save(self.sesh, outfile, global_step=self.step)
-                    try:
-                        self.logger.flush()
-                        self.logger.close()
-                    except(AttributeError): # not logging
-                        continue
-                    break
-            print(" >>> Processed %d batches of size %d, i.e. %d data samples." % (nBatches, self.batch_size, nBatches * self.batch_size))
+            print("\nFinal avg cost (@ step {} = epoch {}): {}".format(total_updates, X.train.epochs_completed, err_train / total_updates))
+            print("Cost of final batch: {}\n".format(cost_finalBatch))
+            now = datetime.now().isoformat()[11:]
+            print("------- Training end: {} -------\n".format(now))
+            if save:
+                outfile = os.path.join(os.path.abspath(outdir), "{}_vae_{}".format(self.datetime, "_".join(map(str, self.architecture))))
+                saver.save(self.sesh, outfile, global_step=self.step)
+            try:
+                self.logger.flush()
+                self.logger.close()
+            except(AttributeError): # not logging
+                pass
+            print(" >>> Processed %d epochs in %d batches of size %d, i.e. %d data samples.\n" % (X.train.epochs_completed, nBatches, self.batch_size, nBatches * self.batch_size))
 
         except(KeyboardInterrupt):
-            print("final avg cost (@ step {} = epoch {}): {}".format(
-                i, X.train.epochs_completed, err_train / i))
+            print("final avg cost (@ step {} = epoch {}): {}".format(total_updates, X.train.epochs_completed, err_train / total_updates))
             now = datetime.now().isoformat()[11:]
             print("------- Training end: {} -------\n".format(now))
             sys.exit(0)

@@ -69,7 +69,8 @@ class VAE():
         # unpack handles for tensor ops to feed or fetch
         (self.x_in, self.dropout_prob, self.z_mean, self.z_sigma,
          self.x_reconstructed, self.z_, self.x_reconstructed_,
-         self.cost, self.total_updates, self.train_op) = handles
+         self.cost, self.total_updates, self.train_op,
+         self.mse_autoencoderTest, self.sqrt_mse_autoencoderTest, self.cosSim_autoencoderTest) = handles
 
         if save_graph_def: # tensorboard
             self.logger = tf.summary.FileWriter(log_dir, self.sesh.graph)
@@ -111,9 +112,12 @@ class VAE():
         x_reconstructed = tf.identity(composeAll(decoding)(z), name="x_reconstructed")
         self.layerSummaries(reversed(decoding), z)
 
-        tf.summary.scalar('autoencoderTest_MSE', tf.losses.mean_squared_error(x_reconstructed, x_in))
-        tf.summary.scalar('autoencoderTest_sqrtMSE', tf.sqrt(tf.losses.mean_squared_error(x_reconstructed, x_in)))
-        tf.summary.scalar('autoencoderTest_cosSim', self.cosSim(x_reconstructed, x_in))
+        mse_autoencoderTest = tf.losses.mean_squared_error(x_reconstructed, x_in)
+        sqrt_mse_autoencoderTest = tf.sqrt(mse_autoencoderTest)
+        cosSim_autoencoderTest = self.cosSim(x_reconstructed, x_in)
+        tf.summary.scalar('autoencoderTest_MSE', mse_autoencoderTest)
+        tf.summary.scalar('autoencoderTest_sqrtMSE', sqrt_mse_autoencoderTest)
+        tf.summary.scalar('autoencoderTest_cosSim', cosSim_autoencoderTest)
 
         # reconstruction loss: mismatch b/w x & x_reconstructed
         # binary cross-entropy -- assumes x & p(x|z) are iid Bernoullis
@@ -157,7 +161,8 @@ class VAE():
                                             name="latent_in")
         x_reconstructed_ = composeAll(decoding)(z_)
 
-        return (x_in, dropout_prob, z_mean, z_sigma, x_reconstructed, z_, x_reconstructed_, cost, total_updates, train_op)
+        return (x_in, dropout_prob, z_mean, z_sigma, x_reconstructed, z_, x_reconstructed_, cost, total_updates, train_op,
+                mse_autoencoderTest, sqrt_mse_autoencoderTest, cosSim_autoencoderTest)
 
     def sampleGaussian(self, mu, sigma):
         """(Differentiably!) draw sample from Gaussian with given shape, subject to random noise epsilon"""
@@ -283,8 +288,11 @@ class VAE():
                     print("  iteration {} --> current cost: {}".format(total_updates, cost))
                     # TO DO: np.dot(a, b), np.linalg.norm(a, axis=1)
 
+                if total_updates%500 == 0 and verbose:
+                    print("\tMean element-wise row sum of inputs: {}".format(np.average(np.sum(x, 1))))
+
                 if total_updates%1000 == 0 and verbose:
-                    print("  \titeration {} --> total avg cost: {}".format(total_updates, err_train / total_updates))
+                    print("\titeration {} --> total avg cost: {}".format(total_updates, err_train / total_updates))
 
                 if total_updates%1000 == 0 and verbose: # and total_updates >= 10000:
                     # visualize `n` examples of current minibatch inputs + reconstructions
@@ -302,10 +310,29 @@ class VAE():
                             plot.plotSubset(self, x, x_reconstructed, n=10, name="cv", outdir=plots_outdir)
 
 
-            print("\nFinal avg cost (@ step {} = epoch {}): {}".format(total_updates, X.train.epochs_completed, err_train / total_updates))
-            print("Cost of final batch: {}\n".format(cost_finalBatch))
             now = datetime.now().isoformat()[11:]
-            print("------- Training end: {} -------\n".format(now))
+            print("\n------- Training end: {} -------\n".format(now))
+            print(" >>> Processed %d epochs in %d batches of size %d, i.e. %d data samples.\n" % (X.train.epochs_completed, nBatches, self.batch_size, nBatches * self.batch_size))
+            print("Final avg cost: {}".format(err_train / total_updates))
+            print("Cost of final batch: {}\n".format(cost_finalBatch))
+
+            # Test dataset
+            print("\n Testing\n -------")
+            x = X.train.getTestData()
+            feed_dict = {self.x_in: x, self.dropout_prob: 1.0}
+            fetches = [self.x_reconstructed, self.cost, self.mse_autoencoderTest, self.sqrt_mse_autoencoderTest, self.cosSim_autoencoderTest]
+            x_reconstructed, cost, mse_autoencoderTest, sqrt_mse_autoencoderTest, cosSim_autoencoderTest = self.sesh.run(fetches, feed_dict)
+            print("   Input:")
+            for row in x[:10]:
+                print("    " + ", ".join([repr(el) for el in row[:20]]) + " ...")
+            print("\n   Prediction:")
+            for row in x_reconstructed[:10]:
+                print("    " + ", ".join([repr(el) for el in row[:20]]) + " ...")
+            print("\n   Cost: {}".format(cost))
+            print("   MSE: {}".format(mse_autoencoderTest))
+            print("   sqrt(MSE): {}".format(sqrt_mse_autoencoderTest))
+            print("   cosSim: {}".format(cosSim_autoencoderTest))
+
             if save:
                 outfile = os.path.join(os.path.abspath(outdir), "{}_vae_{}".format(self.datetime, "_".join(map(str, self.architecture))))
                 saver.save(self.sesh, outfile, global_step=self.step)
@@ -314,7 +341,6 @@ class VAE():
                 self.logger.close()
             except(AttributeError): # not logging
                 pass
-            print(" >>> Processed %d epochs in %d batches of size %d, i.e. %d data samples.\n" % (X.train.epochs_completed, nBatches, self.batch_size, nBatches * self.batch_size))
 
         except(KeyboardInterrupt):
             print("final avg cost (@ step {} = epoch {}): {}".format(total_updates, X.train.epochs_completed, err_train / total_updates))

@@ -15,28 +15,30 @@ from DataFromTxt import DataFromTxt
 IMG_DIM = 28
 
 # Encoder architecture (decoder is symmetric)
-#ARCHITECTURE = [IMG_DIM**2, # 784 pixels
-#                #500, 500, # intermediate encoding
-#                #2] # latent space dims
-#                400, 200,
-#                20]
+ARCHITECTURE = [IMG_DIM**2, # 784 pixels
+                #500, 500, # intermediate encoding
+                #2] # latent space dims
+                400, 200,
+                20]
 
-ARCHITECTURE = [60, 40, 20, 10]
+#ARCHITECTURE = [2000, 500, 250, 125]#, 50]
+#ARCHITECTURE = [60, 30, 20, 10]
 
 HYPERPARAMS = {
     #"batch_size": 128,
-    "batch_size": 10,
-    "learning_rate": 0.01,
+    "batch_size": 16,
+    "learning_rate": 0.005,
     "dropout": 0.9,
     "lambda_l2_reg": 1E-5,
     #"nonlinearity": tf.nn.elu,
     "nonlinearity": tf.nn.relu,
     "output_activation": tf.nn.sigmoid
+    #"output_activation": tf.nn.relu
     #"output_activation": tf.identity
 }
 
-MAX_ITER = 3000 #2**16
-MAX_EPOCHS = 20 #np.inf
+MAX_ITER = 5000 #2**16
+MAX_EPOCHS = 100 #np.inf
 
 LOG_DIR = "./log"
 METAGRAPH_DIR = "./out"
@@ -47,9 +49,11 @@ def load_mnist():
     from tensorflow.examples.tutorials.mnist import input_data
     return input_data.read_data_sets("./mnist_data")
 
-def load_textual_data(path):
+def load_textual_data(path, train_frac=1., nonzero_frac=0.1):
     Datasets = collections.namedtuple('Datasets', ['train', 'validation', 'test'])
-    data = DataFromTxt(path)
+    data = DataFromTxt(path, nonzero_frac)
+    if train_frac < 1.:
+        data.splitTrainTest(train_frac)
     return Datasets(train=data, validation=None, test=None)
 
 def all_plots(model, mnist):
@@ -110,7 +114,8 @@ def main(data="mnist", to_reload=None):
         input_data = load_mnist()
         control_plots = True
     elif data == "sentences":
-        input_data = load_textual_data("data/sentenceVectors-Emails-January.out")
+        #input_data = load_textual_data("data/sentenceVectors-Emails-January.out", 0.9, 0.1)
+        input_data = load_textual_data("data/docVectors-NASA.out", 0.9, 0.01)
         control_plots = False;
 
     if to_reload: # restore
@@ -122,9 +127,9 @@ def main(data="mnist", to_reload=None):
         v.train(input_data, max_iter=MAX_ITER, max_epochs=MAX_EPOCHS, cross_validate=False,
                 verbose=True, save=True, outdir=METAGRAPH_DIR, plots_outdir=PLOTS_DIR,
                 plot_latent_over_time=False, control_plots=control_plots)
-        print("Trained!\n")
 
-    #all_plots(v, input_data)
+    if control_plots:
+        all_plots(v, input_data)
 
 
 if __name__ == "__main__":
